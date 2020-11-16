@@ -9,6 +9,7 @@ using SampleBlock = std::vector<jack_default_audio_sample_t>;
 struct Channel
 {
     jack_port_t* port;
+    int silence_counter;
     std::list<SampleBlock> sampleBuffer;
 };
 

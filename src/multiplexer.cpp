@@ -63,7 +63,7 @@ bool isSilent(const SampleBlock &samples)
 
 int Multiplexer::process(jack_nframes_t nSamples)
 {
-    auto *out = jack_port_get_buffer(outputPort_, nSamples);
+    auto *out = static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(outputPort_, nSamples));
     std::memset(out, 0, nSamples * sizeof(jack_default_audio_sample_t));
     // store inputs in their respective buffers
     for (auto &channel : channels_)
@@ -77,12 +77,16 @@ int Multiplexer::process(jack_nframes_t nSamples)
         std::memcpy(buff.data(), input, nSamples * sizeof(jack_default_audio_sample_t));
 
         if (isSilent(buff))
+            channel.silence_counter++;
+        else
+            channel.silence_counter = 0;
+        if (channel.silence_counter > 10)
             continue;
 
         channel.sampleBuffer.emplace_back(std::move(buff));
     }
     // return output from the currently playing input
-    if (channels_[currentChannel_].sampleBuffer.size() < 2)
+    if (channels_[1 - currentChannel_].sampleBuffer.size() > 1000)
     {
         std::cout << "switching channel\n";
         currentChannel_ = 1 - currentChannel_;
@@ -93,7 +97,17 @@ int Multiplexer::process(jack_nframes_t nSamples)
         return 0;
     }
     auto &buff = channels_[currentChannel_].sampleBuffer.front();
+    auto &buff2 = *std::next(channels_[currentChannel_].sampleBuffer.begin());
     std::memcpy(out, buff.data(), nSamples * sizeof(jack_default_audio_sample_t));
+    for (int i = 0; i < nSamples / 2; ++i)
+    {
+        out[i] = buff[i * 2];
+    }
+    for (int i = 0; i < nSamples / 2; ++i)
+    {
+        out[i + nSamples / 2] = buff2[i * 2];
+    }
+    channels_[currentChannel_].sampleBuffer.pop_front();
     channels_[currentChannel_].sampleBuffer.pop_front();
 
     return 0;
