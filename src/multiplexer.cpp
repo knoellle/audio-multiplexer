@@ -127,11 +127,17 @@ int Multiplexer::process(jack_nframes_t nSamples)
         channels_.begin(), channels_.end(), static_cast<size_t>(0), [](const size_t x, const Channel& c) {
             return x + std::max(0, static_cast<int>(c.sampleBuffer.size() - 100));
         });
+
+    // exponential scaling
     // double tempo = 1.0f + 1.0f / (exp(5.0f - total_buffer / 200.0f));
+
+    // linear scaling
     double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f, 1.0f, 2.0f);
-    std::cout << "Buff: " << total_buffer << "\n";
+
     soundTouch.setTempo(tempo);
+    std::cout << "Buff: " << total_buffer << "\n";
     std::cout << "Tempo: " << tempo << "\n";
+
     // return output from the currently selected input channel
     while (channels_[currentChannel_].sampleBuffer.size() > 1 &&
            jack_ringbuffer_read_space(outputBuffer_) <
