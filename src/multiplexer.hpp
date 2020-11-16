@@ -1,8 +1,11 @@
 #include <cstddef>
-#include <jack/jack.h>
-#include <jack/types.h>
 #include <vector>
 #include <list>
+
+#include <jack/jack.h>
+#include <jack/types.h>
+#include <jack/ringbuffer.h>
+#include <soundtouch/SoundTouch.h>
 
 using SampleBlock = std::vector<jack_default_audio_sample_t>;
 
@@ -17,8 +20,11 @@ class Multiplexer
 {
     jack_client_t* client_;
     jack_port_t* outputPort_;
+    jack_ringbuffer_t *outputBuffer_;
     std::vector<Channel> channels_;
     size_t currentChannel_;
+
+    soundtouch::SoundTouch soundTouch;
 
     static int processWrapper(jack_nframes_t nSamples, void* arg);
     int process(jack_nframes_t nSamples);

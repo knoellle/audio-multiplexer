@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(AudioInterlacer)
 
 find_library(JACK_LIB jack)
+find_library(SoundTouch soundtouch)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -14,4 +15,7 @@ set(SOURCES
 )
 
 add_executable(audio-interlacer ${SOURCES})
-target_link_libraries(audio-interlacer PRIVATE jack)
+target_link_libraries(audio-interlacer PRIVATE
+    jack
+    SoundTouch
+)

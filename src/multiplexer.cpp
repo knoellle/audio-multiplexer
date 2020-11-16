@@ -1,7 +1,11 @@
 #include <algorithm>
-#include <iostream>
-#include <memory>
+#include <bits/ranges_algo.h>
+#include <cmath>
 #include <cstring>
+#include <iostream>
+#include <jack/ringbuffer.h>
+#include <memory>
+#include <numeric>
 #include <sstream>
 
 #include <jack/jack.h>
@@ -13,30 +17,51 @@
 
 void Multiplexer::initJack()
 {
+    // set up jack client
+
     client_ = jack_client_open("Audio Interlacer", JackNullOption, nullptr);
     if (client_ == NULL)
     {
         std::cerr << "Could not create JACK client.\n";
         exit(1);
     }
-    outputPort_ = jack_port_register(client_, "output", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+    outputPort_ =
+        jack_port_register(client_, "output", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
     if (outputPort_ == NULL)
     {
         std::cerr << "Could not register port.\n";
         exit(1);
     }
     int i = 0;
-    for (auto &channel : channels_)
+    for (auto& channel : channels_)
     {
         ++i;
         std::stringstream namestream;
         namestream << i << " left";
-        channel.port = jack_port_register(client_, namestream.str().c_str(), JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
-        // channel.port = jack_port_register(client_, "right", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        channel.port = jack_port_register(client_, namestream.str().c_str(),
+                                          JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        // channel.port = jack_port_register(client_, "right", JACK_DEFAULT_AUDIO_TYPE,
+        // JackPortIsInput, 0);
     }
 
     jack_set_process_callback(client_, Multiplexer::processWrapper, this);
 
+    // set up output buffer
+
+    const int bufferSize = jack_get_sample_rate(client_);
+    outputBuffer_ = jack_ringbuffer_create(sizeof(jack_default_audio_sample_t) * bufferSize * 32);
+
+    // set up soundtouch object
+
+    const int sampleRate = jack_get_sample_rate(client_);
+    soundTouch.setSampleRate(sampleRate);
+    soundTouch.setChannels(1);
+    soundTouch.setTempo(2.0f);
+    soundTouch.setSetting(SETTING_SEQUENCE_MS, 40);
+    soundTouch.setSetting(SETTING_SEEKWINDOW_MS, 15);
+    soundTouch.setSetting(SETTING_OVERLAP_MS, 8);
+
+    // activate jack client
     int r = jack_activate(client_);
     if (r != 0)
     {
@@ -50,7 +75,7 @@ Multiplexer::~Multiplexer()
     jack_client_close(client_);
 }
 
-bool isSilent(const SampleBlock &samples)
+bool isSilent(const SampleBlock& samples)
 {
     jack_default_audio_sample_t total = 0.0f;
     for (auto sample : samples)
@@ -63,12 +88,14 @@ bool isSilent(const SampleBlock &samples)
 
 int Multiplexer::process(jack_nframes_t nSamples)
 {
-    auto *out = static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(outputPort_, nSamples));
+    auto* out =
+        static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(outputPort_, nSamples));
     std::memset(out, 0, nSamples * sizeof(jack_default_audio_sample_t));
     // store inputs in their respective buffers
-    for (auto &channel : channels_)
+    for (auto& channel : channels_)
     {
-        auto *input = static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(channel.port, nSamples));
+        auto* input =
+            static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(channel.port, nSamples));
         std::cout << channel.sampleBuffer.size() << "\n";
         SampleBlock buff(nSamples);
         if (!input)
@@ -85,8 +112,8 @@ int Multiplexer::process(jack_nframes_t nSamples)
 
         channel.sampleBuffer.emplace_back(std::move(buff));
     }
-    // return output from the currently playing input
-    if (channels_[1 - currentChannel_].sampleBuffer.size() > 1000)
+    // select input channel
+    if (channels_[1 - currentChannel_].sampleBuffer.size() > 100)
     {
         std::cout << "switching channel\n";
         currentChannel_ = 1 - currentChannel_;
@@ -96,19 +123,38 @@ int Multiplexer::process(jack_nframes_t nSamples)
         std::cout << "buffers empty, skipping\n";
         return 0;
     }
-    auto &buff = channels_[currentChannel_].sampleBuffer.front();
-    auto &buff2 = *std::next(channels_[currentChannel_].sampleBuffer.begin());
-    std::memcpy(out, buff.data(), nSamples * sizeof(jack_default_audio_sample_t));
-    for (int i = 0; i < nSamples / 2; ++i)
+    size_t total_buffer = std::accumulate(
+        channels_.begin(), channels_.end(), static_cast<size_t>(0), [](const size_t x, const Channel& c) {
+            return x + std::max(0, static_cast<int>(c.sampleBuffer.size() - 100));
+        });
+    // double tempo = 1.0f + 1.0f / (exp(5.0f - total_buffer / 200.0f));
+    double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f, 1.0f, 2.0f);
+    std::cout << "Buff: " << total_buffer << "\n";
+    soundTouch.setTempo(tempo);
+    std::cout << "Tempo: " << tempo << "\n";
+    // return output from the currently selected input channel
+    while (channels_[currentChannel_].sampleBuffer.size() > 1 &&
+           jack_ringbuffer_read_space(outputBuffer_) <
+               nSamples * 4 * sizeof(jack_default_audio_sample_t))
     {
-        out[i] = buff[i * 2];
+        size_t n;
+        auto& buff = channels_[currentChannel_].sampleBuffer.front();
+        soundTouch.putSamples(buff.data(), nSamples);
+        channels_[currentChannel_].sampleBuffer.pop_front();
+        do
+        {
+            jack_ringbuffer_data_t data[2];
+            jack_ringbuffer_get_write_vector(outputBuffer_, data);
+            n = soundTouch.receiveSamples(reinterpret_cast<float*>(data[0].buf),
+                                          data[0].len / sizeof(jack_default_audio_sample_t));
+            jack_ringbuffer_write_advance(outputBuffer_, n * sizeof(jack_default_audio_sample_t));
+        } while (n > 0);
     }
-    for (int i = 0; i < nSamples / 2; ++i)
+    if (jack_ringbuffer_read_space(outputBuffer_) >= nSamples * sizeof(jack_default_audio_sample_t))
     {
-        out[i + nSamples / 2] = buff2[i * 2];
+        int n = jack_ringbuffer_read(outputBuffer_, reinterpret_cast<char*>(out),
+                                     nSamples * sizeof(jack_default_audio_sample_t));
     }
-    channels_[currentChannel_].sampleBuffer.pop_front();
-    channels_[currentChannel_].sampleBuffer.pop_front();
 
     return 0;
 }
