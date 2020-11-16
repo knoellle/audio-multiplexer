@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <cstring>
@@ -6,6 +7,7 @@
 #include <jack/jack.h>
 #include <jack/types.h>
 #include <string>
+#include <vector>
 
 #include "multiplexer.hpp"
 
@@ -48,19 +50,52 @@ Multiplexer::~Multiplexer()
     jack_client_close(client_);
 }
 
+bool isSilent(const SampleBlock &samples)
+{
+    jack_default_audio_sample_t total = 0.0f;
+    for (auto sample : samples)
+    {
+        total += std::abs(sample);
+    }
+    // std::cout << "Total: " << total << "\n";
+    return total < 10.0f;
+}
+
 int Multiplexer::process(jack_nframes_t nSamples)
 {
     auto *out = jack_port_get_buffer(outputPort_, nSamples);
+    std::memset(out, 0, nSamples * sizeof(jack_default_audio_sample_t));
+    // store inputs in their respective buffers
     for (auto &channel : channels_)
     {
         auto *input = static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(channel.port, nSamples));
-        std::cout << channel.port << " - " << input << "\n";
-        if (input)
-            std::memcpy(out, input, nSamples * sizeof(jack_default_audio_sample_t));
-        for (int i = 0; i < nSamples; ++i)
-            std::cout << input[i] << "\n";
+        std::cout << channel.sampleBuffer.size() << "\n";
+        SampleBlock buff(nSamples);
+        if (!input)
+            continue;
+
+        std::memcpy(buff.data(), input, nSamples * sizeof(jack_default_audio_sample_t));
+
+        if (isSilent(buff))
+            continue;
+
+        channel.sampleBuffer.emplace_back(std::move(buff));
     }
-    std::cout << nSamples << "\n";
+    // return output from the currently playing input
+    if (channels_[currentChannel_].sampleBuffer.size() < 2)
+    {
+        std::cout << "switching channel\n";
+        currentChannel_ = 1 - currentChannel_;
+    }
+    if (channels_[currentChannel_].sampleBuffer.size() < 2)
+    {
+        std::cout << "buffers empty, skipping\n";
+        return 0;
+    }
+    auto &buff = channels_[currentChannel_].sampleBuffer.front();
+    std::memcpy(out, buff.data(), nSamples * sizeof(jack_default_audio_sample_t));
+    channels_[currentChannel_].sampleBuffer.pop_front();
+
     return 0;
 }
 
