@@ -22,7 +22,7 @@ void Multiplexer::initJack()
 {
     // set up jack client
 
-    client_ = jack_client_open("Audio Interlacer", JackNullOption, nullptr);
+    client_ = jack_client_open("Audio Multiplexer", JackNullOption, nullptr);
     if (client_ == NULL)
     {
         std::cerr << "Could not create JACK client.\n";

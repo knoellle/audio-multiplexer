@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(AudioInterlacer)
+project(AudioMultiplexer)
 
 find_library(JACK_LIB jack)
 find_library(SoundTouch soundtouch)
@@ -14,8 +14,8 @@ set(SOURCES
     src/multiplexer.cpp
 )
 
-add_executable(audio-interlacer ${SOURCES})
-target_link_libraries(audio-interlacer PRIVATE
+add_executable(audio-multiplexer ${SOURCES})
+target_link_libraries(audio-multiplexer PRIVATE
     jack
     SoundTouch
 )
