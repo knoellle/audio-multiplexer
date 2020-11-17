@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <bits/ranges_algo.h>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -14,6 +15,8 @@
 #include <vector>
 
 #include "multiplexer.hpp"
+
+using namespace std::chrono_literals;
 
 void Multiplexer::initJack()
 {
@@ -40,6 +43,7 @@ void Multiplexer::initJack()
         namestream << i << " left";
         channel.port = jack_port_register(client_, namestream.str().c_str(),
                                           JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        channel.lastPlayed = std::chrono::steady_clock::now();
         // channel.port = jack_port_register(client_, "right", JACK_DEFAULT_AUDIO_TYPE,
         // JackPortIsInput, 0);
     }
@@ -113,7 +117,9 @@ int Multiplexer::process(jack_nframes_t nSamples)
         channel.sampleBuffer.emplace_back(std::move(buff));
     }
     // select input channel
-    if (channels_[1 - currentChannel_].sampleBuffer.size() > 100)
+    if ((channels_[1 - currentChannel_].sampleBuffer.size() > 10 &&
+         std::chrono::steady_clock::now() - channels_[1 - currentChannel_].lastPlayed > 4s) ||
+        channels_[currentChannel_].silence_counter > 10)
     {
         std::cout << "switching channel\n";
         currentChannel_ = 1 - currentChannel_;
@@ -123,10 +129,11 @@ int Multiplexer::process(jack_nframes_t nSamples)
         std::cout << "buffers empty, skipping\n";
         return 0;
     }
-    size_t total_buffer = std::accumulate(
-        channels_.begin(), channels_.end(), static_cast<size_t>(0), [](const size_t x, const Channel& c) {
-            return x + std::max(0, static_cast<int>(c.sampleBuffer.size() - 100));
-        });
+    size_t total_buffer =
+        std::accumulate(channels_.begin(), channels_.end(), static_cast<size_t>(0),
+                        [](const size_t x, const Channel& c) {
+                            return x + std::max(0, static_cast<int>(c.sampleBuffer.size() - 100));
+                        });
 
     // exponential scaling
     // double tempo = 1.0f + 1.0f / (exp(5.0f - total_buffer / 200.0f));
@@ -147,6 +154,7 @@ int Multiplexer::process(jack_nframes_t nSamples)
         auto& buff = channels_[currentChannel_].sampleBuffer.front();
         soundTouch.putSamples(buff.data(), nSamples);
         channels_[currentChannel_].sampleBuffer.pop_front();
+        channels_[currentChannel_].lastPlayed = std::chrono::steady_clock::now();
         do
         {
             jack_ringbuffer_data_t data[2];

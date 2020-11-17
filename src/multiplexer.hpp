@@ -1,6 +1,8 @@
 #include <cstddef>
+#include <ctime>
 #include <vector>
 #include <list>
+#include <chrono>
 
 #include <jack/jack.h>
 #include <jack/types.h>
@@ -13,6 +15,7 @@ struct Channel
 {
     jack_port_t* port;
     int silence_counter;
+    std::chrono::steady_clock::time_point lastPlayed;
     std::list<SampleBlock> sampleBuffer;
 };
 
