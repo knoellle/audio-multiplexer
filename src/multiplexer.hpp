@@ -11,14 +11,24 @@
 #include <jack/ringbuffer.h>
 #include <soundtouch/SoundTouch.h>
 
-using SampleBlock = std::vector<jack_default_audio_sample_t>;
+using Samples = std::vector<jack_default_audio_sample_t>;
+
+struct SampleBlock
+{
+    float following_silence;
+    Samples samples;
+    SampleBlock() {}
+    SampleBlock(Samples samples)
+        : samples(samples)
+    {}
+};
 
 struct Channel
 {
     jack_port_t* port;
     int silence_counter;
     std::chrono::steady_clock::time_point lastPlayed;
-    std::list<SampleBlock> sampleBuffer;
+    std::list<SampleBlock> sampleBlocks;
     float affinity;
 };
 

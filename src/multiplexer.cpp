@@ -79,7 +79,7 @@ Multiplexer::~Multiplexer()
     jack_client_close(client_);
 }
 
-bool isSilent(const SampleBlock& samples)
+bool isSilent(const Samples& samples)
 {
     jack_default_audio_sample_t total = 0.0f;
     for (auto sample : samples)
@@ -92,14 +92,14 @@ bool isSilent(const SampleBlock& samples)
 
 float Multiplexer::channelAffinity(Channel &channel)
 {
-    if (channel.sampleBuffer.size() == 0)
+    if (channel.sampleBlocks.size() == 0)
         return 0;
 
-    const double timeSinceLastPlayed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - channel.lastPlayed).count() / 1000.0f;
+    const double timeSinceLastPlayed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - channel.lastPlayed).count() / 100.0f;
     const double currentlyPlayingBonus = channel.port == channels_[currentChannel_].port ? 100 : 0;
-    const double silencePenalty = channel.silence_counter * 5;
+    const double silencePenalty = channel.silence_counter * 0;
 
-    return channel.sampleBuffer.size() + timeSinceLastPlayed + currentlyPlayingBonus - silencePenalty;
+    return channel.sampleBlocks.size() + timeSinceLastPlayed + currentlyPlayingBonus - silencePenalty;
 }
 
 bool Multiplexer::shouldSwitch()
@@ -120,21 +120,39 @@ int Multiplexer::process(jack_nframes_t nSamples)
     {
         auto* input =
             static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(channel.port, nSamples));
-        std::cout << channel.sampleBuffer.size() << "\n";
-        SampleBlock buff(nSamples);
+        std::cout << channel.sampleBlocks.size() << "\n";
+        Samples buff(nSamples);
         if (!input)
             continue;
 
         std::memcpy(buff.data(), input, nSamples * sizeof(jack_default_audio_sample_t));
 
         if (isSilent(buff))
+        {
             channel.silence_counter++;
+            if (channel.sampleBlocks.size() > 0)
+            {
+                channel.sampleBlocks.back().following_silence++;
+                if (channel.sampleBlocks.back().following_silence > 10)
+                    continue;
+            }
+            else
+                continue;
+        }
         else
+        {
+            if (channel.silence_counter > 10)
+                channel.sampleBlocks.emplace_back();
             channel.silence_counter = 0;
-        if (channel.silence_counter > 10)
-            continue;
+        }
 
-        channel.sampleBuffer.emplace_back(std::move(buff));
+        if (channel.sampleBlocks.size() == 0)
+            channel.sampleBlocks.emplace_back(std::move(buff));
+        else
+        {
+            channel.sampleBlocks.back().samples.reserve(channel.sampleBlocks.back().samples.size() + buff.size());
+            channel.sampleBlocks.back().samples.insert(channel.sampleBlocks.back().samples.end(), buff.begin(), buff.end());
+        }
         channel.affinity = channelAffinity(channel);
     }
     // select input channel
@@ -143,38 +161,43 @@ int Multiplexer::process(jack_nframes_t nSamples)
         /* std::cout << "switching channel\n"; */
         currentChannel_ = 1 - currentChannel_;
     }
-    if (channels_[currentChannel_].sampleBuffer.size() < 2)
+    size_t total_buffer = 0;
+    for (auto &channel : channels_)
+        total_buffer += std::max(0, static_cast<int>(std::accumulate(channel.sampleBlocks.begin(), channel.sampleBlocks.end(), static_cast<size_t>(0),
+                        [](const size_t x, const SampleBlock& b) {
+                            return x + b.samples.size() - 100;
+                        })));
+
+    if (total_buffer < nSamples * 2)
     {
         std::cout << "buffers empty, skipping\n";
         return 0;
     }
-    size_t total_buffer =
-        std::accumulate(channels_.begin(), channels_.end(), static_cast<size_t>(0),
-                        [](const size_t x, const Channel& c) {
-                            return x + std::max(0, static_cast<int>(c.sampleBuffer.size() - 100));
-                        });
 
     // exponential scaling
     // double tempo = 1.0f + 1.0f / (exp(5.0f - total_buffer / 200.0f));
 
     // linear scaling
-    double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f, 1.0f, 2.0f);
-    if (channels_[currentChannel_].sampleBuffer.size() < 2)
-        tempo = 1.0f;
+    double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f / nSamples, 1.0f, 2.0f);
+    /* if (channels_[currentChannel_].sampleBlocks.size() < 2) */
+    /*     tempo = 1.0f; */
 
     soundTouch.setTempo(tempo);
     std::cout << "Buff: " << total_buffer << "\n";
     std::cout << "Tempo: " << tempo << "\n";
     std::cout << "Status: " << statusline_ << "\n";
     // return output from the currently selected input channel
-    while (channels_[currentChannel_].sampleBuffer.size() > 1 &&
+    while (channels_[currentChannel_].sampleBlocks.size() > 0 &&
            jack_ringbuffer_read_space(outputBuffer_) <
                nSamples * 4 * sizeof(jack_default_audio_sample_t))
     {
         size_t n;
-        auto& buff = channels_[currentChannel_].sampleBuffer.front();
-        soundTouch.putSamples(buff.data(), nSamples);
-        channels_[currentChannel_].sampleBuffer.pop_front();
+        auto& buff = channels_[currentChannel_].sampleBlocks.front().samples;
+        n = std::min(buff.size(), static_cast<size_t>(nSamples));
+        soundTouch.putSamples(buff.data(), n);
+        buff.erase(buff.begin(), buff.begin() + n);
+        if (buff.size() == 0)
+            channels_[currentChannel_].sampleBlocks.pop_front();
         channels_[currentChannel_].lastPlayed = std::chrono::steady_clock::now();
         do
         {
