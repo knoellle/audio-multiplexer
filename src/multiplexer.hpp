@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstddef>
 #include <ctime>
 #include <vector>
@@ -17,6 +19,7 @@ struct Channel
     int silence_counter;
     std::chrono::steady_clock::time_point lastPlayed;
     std::list<SampleBlock> sampleBuffer;
+    float affinity;
 };
 
 class Multiplexer
@@ -26,11 +29,15 @@ class Multiplexer
     jack_ringbuffer_t *outputBuffer_;
     std::vector<Channel> channels_;
     size_t currentChannel_;
+    std::string statusline_;
 
     soundtouch::SoundTouch soundTouch;
 
     static int processWrapper(jack_nframes_t nSamples, void* arg);
     int process(jack_nframes_t nSamples);
+    bool shouldSwitch();
+    float channelAffinity(Channel &channel);
+
 
   public:
 

@@ -90,6 +90,26 @@ bool isSilent(const SampleBlock& samples)
     return total < 10.0f;
 }
 
+float Multiplexer::channelAffinity(Channel &channel)
+{
+    if (channel.sampleBuffer.size() == 0)
+        return 0;
+
+    const double timeSinceLastPlayed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - channel.lastPlayed).count() / 1000.0f;
+    const double currentlyPlayingBonus = channel.port == channels_[currentChannel_].port ? 100 : 0;
+    const double silencePenalty = channel.silence_counter * 5;
+
+    return channel.sampleBuffer.size() + timeSinceLastPlayed + currentlyPlayingBonus - silencePenalty;
+}
+
+bool Multiplexer::shouldSwitch()
+{
+    std::cout << "Affinities: \n";
+    std::cout << channels_[0].affinity << "\n";
+    std::cout << channels_[1].affinity << "\n";
+    return channels_[currentChannel_].affinity < channels_[1 - currentChannel_].affinity;
+}
+
 int Multiplexer::process(jack_nframes_t nSamples)
 {
     auto* out =
@@ -115,13 +135,12 @@ int Multiplexer::process(jack_nframes_t nSamples)
             continue;
 
         channel.sampleBuffer.emplace_back(std::move(buff));
+        channel.affinity = channelAffinity(channel);
     }
     // select input channel
-    if ((channels_[1 - currentChannel_].sampleBuffer.size() > 10 &&
-         std::chrono::steady_clock::now() - channels_[1 - currentChannel_].lastPlayed > 4s) ||
-        channels_[currentChannel_].silence_counter > 10)
+    if (shouldSwitch())
     {
-        std::cout << "switching channel\n";
+        /* std::cout << "switching channel\n"; */
         currentChannel_ = 1 - currentChannel_;
     }
     if (channels_[currentChannel_].sampleBuffer.size() < 2)
@@ -140,11 +159,13 @@ int Multiplexer::process(jack_nframes_t nSamples)
 
     // linear scaling
     double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f, 1.0f, 2.0f);
+    if (channels_[currentChannel_].sampleBuffer.size() < 2)
+        tempo = 1.0f;
 
     soundTouch.setTempo(tempo);
     std::cout << "Buff: " << total_buffer << "\n";
     std::cout << "Tempo: " << tempo << "\n";
-
+    std::cout << "Status: " << statusline_ << "\n";
     // return output from the currently selected input channel
     while (channels_[currentChannel_].sampleBuffer.size() > 1 &&
            jack_ringbuffer_read_space(outputBuffer_) <
