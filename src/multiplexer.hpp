@@ -30,6 +30,8 @@ struct Channel
     std::chrono::steady_clock::time_point lastPlayed;
     std::list<SampleBlock> sampleBlocks;
     float affinity;
+    float finished_penalty;
+    float priority;
 };
 
 class Multiplexer

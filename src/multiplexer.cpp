@@ -47,6 +47,9 @@ void Multiplexer::initJack()
         // channel.port = jack_port_register(client_, "right", JACK_DEFAULT_AUDIO_TYPE,
         // JackPortIsInput, 0);
     }
+    // Todo: make configurable
+    channels_[0].priority = 0;
+    channels_[1].priority = 0;
 
     jack_set_process_callback(client_, Multiplexer::processWrapper, this);
 
@@ -94,12 +97,15 @@ float Multiplexer::channelAffinity(Channel &channel)
 {
     if (channel.sampleBlocks.size() == 0)
         return 0;
+    if (channel.sampleBlocks.front().samples.size() == 0)
+        return 0;
 
     const double timeSinceLastPlayed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - channel.lastPlayed).count() / 100.0f;
     const double currentlyPlayingBonus = channel.port == channels_[currentChannel_].port ? 100 : 0;
-    const double silencePenalty = channel.silence_counter * 0;
+    const double finished_penalty = channel.finished_penalty * 30;
+    const double priority_bonus = channel.priority * 100;
 
-    return channel.sampleBlocks.size() + timeSinceLastPlayed + currentlyPlayingBonus - silencePenalty;
+    return channel.sampleBlocks.size() + priority_bonus + timeSinceLastPlayed + currentlyPlayingBonus - finished_penalty;
 }
 
 bool Multiplexer::shouldSwitch()
@@ -154,6 +160,7 @@ int Multiplexer::process(jack_nframes_t nSamples)
             channel.sampleBlocks.back().samples.insert(channel.sampleBlocks.back().samples.end(), buff.begin(), buff.end());
         }
         channel.affinity = channelAffinity(channel);
+        channel.finished_penalty = 0;
     }
     // select input channel
     if (shouldSwitch())
@@ -165,20 +172,25 @@ int Multiplexer::process(jack_nframes_t nSamples)
     for (auto &channel : channels_)
         total_buffer += std::max(0, static_cast<int>(std::accumulate(channel.sampleBlocks.begin(), channel.sampleBlocks.end(), static_cast<size_t>(0),
                         [](const size_t x, const SampleBlock& b) {
-                            return x + b.samples.size() - 100;
+                            return x + b.samples.size();
                         })));
 
-    if (total_buffer < nSamples * 2)
+    if (total_buffer < nSamples)
     {
         std::cout << "buffers empty, skipping\n";
         return 0;
     }
 
+    size_t current_channel_buffer = std::accumulate(channels_[currentChannel_].sampleBlocks.begin(), channels_[currentChannel_].sampleBlocks.end(), static_cast<size_t>(0),
+                        [](const size_t x, const SampleBlock& b) {
+                            return x + b.samples.size();
+                        });
+
     // exponential scaling
     // double tempo = 1.0f + 1.0f / (exp(5.0f - total_buffer / 200.0f));
 
     // linear scaling
-    double tempo = std::ranges::clamp(1.0f + total_buffer / 200.0f / nSamples, 1.0f, 2.0f);
+    double tempo = std::ranges::clamp(1.0f + (static_cast<float>(current_channel_buffer) / nSamples - 1.0f) / 200.0f, 1.0f, 2.0f);
     /* if (channels_[currentChannel_].sampleBlocks.size() < 2) */
     /*     tempo = 1.0f; */
 
@@ -196,8 +208,6 @@ int Multiplexer::process(jack_nframes_t nSamples)
         n = std::min(buff.size(), static_cast<size_t>(nSamples));
         soundTouch.putSamples(buff.data(), n);
         buff.erase(buff.begin(), buff.begin() + n);
-        if (buff.size() == 0)
-            channels_[currentChannel_].sampleBlocks.pop_front();
         channels_[currentChannel_].lastPlayed = std::chrono::steady_clock::now();
         do
         {
@@ -207,11 +217,21 @@ int Multiplexer::process(jack_nframes_t nSamples)
                                           data[0].len / sizeof(jack_default_audio_sample_t));
             jack_ringbuffer_write_advance(outputBuffer_, n * sizeof(jack_default_audio_sample_t));
         } while (n > 0);
+        if (buff.size() == 0)
+        {
+            channels_[currentChannel_].sampleBlocks.pop_front();
+            channels_[currentChannel_].finished_penalty = 1;
+            break;
+        }
     }
     if (jack_ringbuffer_read_space(outputBuffer_) >= nSamples * sizeof(jack_default_audio_sample_t))
     {
         int n = jack_ringbuffer_read(outputBuffer_, reinterpret_cast<char*>(out),
                                      nSamples * sizeof(jack_default_audio_sample_t));
+    }
+    else
+    {
+        std::cout << "ERROR: No samples available to play" << "\n";
     }
 
     return 0;
